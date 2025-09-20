@@ -1,4 +1,4 @@
-вот еще скрипт import os
+import os
 import subprocess
 import ctypes
 import sys
